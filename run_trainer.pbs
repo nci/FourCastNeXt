@@ -1,0 +1,160 @@
+#!/bin/bash
+#PBS -P <your NCI project>
+#PBS -q gpuvolta
+#PBS -l walltime=15:00:00
+#PBS -l mem=382GB
+#PBS -l ncpus=48
+#PBS -l ngpus=4
+#PBS -l jobfs=200GB
+#PBS -l storage=gdata/rt52+gdata/<your NCI project>
+#PBS -N pbs_fourcastnext_trainer
+
+set -eu
+
+module load cuda/11.7.0
+
+curr_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+curr_path=${PBS_O_WORKDIR:-$curr_dir}
+
+export PATH=$curr_path/python_env/bin:$PATH
+
+export WORLD_SIZE=${PBS_NGPUS:-1}
+max_pretrain_steps=40000
+max_finetune_steps=2000
+
+## resume training from the last checkpoint
+## e.g. resume_checkpoint_path="$curr_path/lightning_logs/version_1/checkpoints/model-step=19500.ckpt"
+resume_checkpoint_path=""
+
+ray_port=26378
+ray_head_host=$(hostname)
+
+num_ray_worker_nodes=3
+ray_worker_file=$curr_path/ray_worker.pbs
+ray_worker_name=ray_worker
+
+ray_tmp_root=/tmp
+mkdir -p $ray_tmp_root
+ray_tmp_root=$(mktemp -p $ray_tmp_root -d XXX)
+
+job_id_file=$PBS_JOBFS/job_ids
+
+export OMP_NUM_THREADS=1
+
+function cleanup {
+  set +e
+  rm -f $ray_worker_file
+  qdel $(cat $job_id_file) &
+  rm -rf $ray_tmp_root &
+  ray stop -f &
+  set -e
+
+  wait
+}
+trap "cleanup" EXIT
+
+cat > $ray_worker_file <<-EOF
+#!/bin/bash
+#PBS -P fp0
+#PBS -q normal
+#PBS -l walltime=15:00:00
+#PBS -l mem=96GB
+#PBS -l ncpus=24
+#PBS -l jobfs=200GB
+#PBS -l storage=gdata/rt52+gdata/fr5
+#PBS -N $ray_worker_name
+#PBS -e /g/data/fr5/jxg900/fourcastnet/pbs_logs
+#PBS -o /g/data/fr5/jxg900/fourcastnet/pbs_logs
+
+set -xeu
+
+export PATH=$PATH
+export PYTHONPATH=$curr_path
+export OMP_NUM_THREADS=1
+
+export RAY_num_heartbeats_timeout=120
+
+mkdir -p $ray_tmp_root
+
+for i in {1..600}
+do
+  if ray start --address='$ray_head_host:$ray_port' --num-cpus=\$(expr \$PBS_NCPUS - 1) --block --disable-usage-stats
+  then
+    break
+  fi
+
+  echo "restarting ray worker \$i"
+
+  sleep 30
+done 
+EOF
+
+mkdir -p $ray_tmp_root
+export RAY_num_heartbeats_timeout=120
+
+ray start --head --port=$ray_port \
+  --num-cpus=$(expr $PBS_NCPUS - 3) \
+  --num-gpus=0 \
+  --disable-usage-stats \
+  --include-dashboard=False \
+  --temp-dir=$ray_tmp_root
+
+nvidia-smi
+
+(
+for i in $(seq 1 $num_ray_worker_nodes)
+do
+  qsub $ray_worker_file >> $job_id_file
+done
+) &
+
+## single-step pre-training
+if [ ! -f $curr_path/pre-trained_best_model.txt ]
+then
+  (
+  cd $curr_path
+  python -u trainer.py \
+    --max-train-steps=$max_pretrain_steps \
+    --base-lr=3e-3 \
+    --max-sampling-time-steps=1 \
+    --resume-checkpoint-path="$resume_checkpoint_path" \
+    --best-model-path=$curr_path/pre-trained_best_model.txt
+  )
+fi
+
+## multi-step fine-tuning
+(
+cd $curr_path
+
+if [ -f $curr_path/fine-tuning.progress ]
+then
+  start_step=$(cat $curr_path/fine-tuning.progress) 
+  start_step=$(echo $start_step+1|bc)
+else
+  start_step=2 
+fi
+
+for step in $(seq $start_step 4)
+do
+  if [ $step -eq 2 ]
+  then
+    best_model_path=$curr_path/pre-trained_best_model.txt
+  else
+    best_model_path=$curr_path/best_model.txt
+  fi
+
+  echo "fine-tuning multi-step: $step"
+
+  python -u trainer.py \
+    --max-train-steps=$max_finetune_steps \
+    --base-lr=1e-4 \
+    --max-sampling-time-steps=$step \
+    --resume-checkpoint-path="$(cat $best_model_path)" \
+    --best-model-path=$curr_path/best_model.txt
+
+  echo $step > $curr_path/fine-tuning.progress
+done
+
+rm -f $curr_path/fine-tuning.progress
+)
+
