@@ -6,6 +6,8 @@ Overview
 
 This repo contains scripts to perform FourCastNeXt training and inference using ERA5 from NCI project rt52.
 
+For technical details, please refer to [technical report](technical_report.md)
+
 Setup
 -----
 
