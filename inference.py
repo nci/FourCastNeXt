@@ -134,55 +134,66 @@ if __name__ == '__main__':
   obj_ref_info = {}
   num_tasks = 0
   max_tasks = math.ceil(args.num_data_workers * 1.2)
-  for ic in range(n_ics):
-    query_time = prediction_times[ic][0]
-    logger.info(f'initial condition({ic+1}/{n_ics}): {query_time}')
+    
+  from torch.profiler import profile, record_function, ProfilerActivity
 
-    obj = get_training_data.remote(query_time, [args.num_pred_steps, ], 0, image_height, 0, image_width,
-      has_input1=False, has_target=calc_rmse)
-    obj_refs.append(obj)
-    obj_ref_info[obj] = ic
+  with torch.profiler.profile(
+        # schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/fcnx'),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+  ) as prof:
+        
+      for ic in range(n_ics):
+        query_time = prediction_times[ic][0]
+        logger.info(f'initial condition({ic+1}/{n_ics}): {query_time}')
 
-    while (len(obj_refs) >= max_tasks or ic == n_ics - 1) and num_tasks < n_ics:
-      ready_refs, obj_refs = ray.wait(obj_refs, num_returns=1)
-      for obj in ready_refs:
-        icc = obj_ref_info[obj]
-        del obj_ref_info[obj]
+        obj = get_training_data.remote(query_time, [args.num_pred_steps, ], 0, image_height, 0, image_width,
+          has_input1=False, has_target=calc_rmse)
+        obj_refs.append(obj)
+        obj_ref_info[obj] = ic
 
-        input_batch = ray.get(obj)
+        while (len(obj_refs) >= max_tasks or ic == n_ics - 1) and num_tasks < n_ics:
+          ready_refs, obj_refs = ray.wait(obj_refs, num_returns=1)
+          for obj in ready_refs:
+            icc = obj_ref_info[obj]
+            del obj_ref_info[obj]
 
-        input_batch['input0'] = torch.from_numpy(input_batch['input0'])[None, ...].to(device)
-        input_batch['n_pred_steps'] = args.num_pred_steps
+            input_batch = ray.get(obj)
 
-        if calc_rmse:
-          for step, target in input_batch['targets'].items():
-            gt = torch.from_numpy(input_batch['targets'][step])
-            break
+            input_batch['input0'] = torch.from_numpy(input_batch['input0'])[None, ...].to(device)
+            input_batch['n_pred_steps'] = args.num_pred_steps
 
-        with torch.inference_mode():
-          prediction = model.predict_step(input_batch, 0)
+            if calc_rmse:
+              for step, target in input_batch['targets'].items():
+                gt = torch.from_numpy(input_batch['targets'][step])
+                break
 
-        if has_outputs:
-          t_start = icc * args.num_pred_steps
-          t_end = t_start + args.num_pred_steps
-          pred_np = prediction.cpu().numpy()
-          with zarr.open(args.output_path) as ds:
-            for cc in range(num_channels):
-              var_name = channel_to_var(cc)
-              ds[var_name][t_start:t_end, ...] = pred_np[:, cc, ...]
+            with torch.inference_mode():
+              prediction = model.predict_step(input_batch, 0)
 
-        if calc_rmse:
-          avg_rmses[icc] = torch.sqrt(F.mse_loss(prediction[-1, ...], gt)).item()
+            if has_outputs:
+              t_start = icc * args.num_pred_steps
+              t_end = t_start + args.num_pred_steps
+              pred_np = prediction.cpu().numpy()
+              with zarr.open(args.output_path) as ds:
+                for cc in range(num_channels):
+                  var_name = channel_to_var(cc)
+                  ds[var_name][t_start:t_end, ...] = pred_np[:, cc, ...]
+
+            if calc_rmse:
+              avg_rmses[icc] = torch.sqrt(F.mse_loss(prediction[-1, ...], gt)).item()
+              for cc in range(num_channels):
+                channel_rmses[icc, cc] = torch.sqrt(F.mse_loss(prediction[-1, cc, ...], gt[cc, ...])).item()
+
+            num_tasks += 1
+
+      if calc_rmse:
+        for ic in range(n_ics):
+          query_time = prediction_times[ic][0]
+          avg_rmse = avg_rmses[ic]
+          logger.info(f'{query_time}: average rmse: {avg_rmse:.6f}, steps: {args.num_pred_steps}')
           for cc in range(num_channels):
-            channel_rmses[icc, cc] = torch.sqrt(F.mse_loss(prediction[-1, cc, ...], gt[cc, ...])).item()
-
-        num_tasks += 1
-
-  if calc_rmse:
-    for ic in range(n_ics):
-      query_time = prediction_times[ic][0]
-      avg_rmse = avg_rmses[ic]
-      logger.info(f'{query_time}: average rmse: {avg_rmse:.6f}, steps: {args.num_pred_steps}')
-      for cc in range(num_channels):
-        rmse = channel_rmses[ic, cc]
-        logger.info(f'{query_time}: channel: {cc}, rmse: {rmse:.6f}, steps: {args.num_pred_steps}')
+            rmse = channel_rmses[ic, cc]
+            logger.info(f'{query_time}: channel: {cc}, rmse: {rmse:.6f}, steps: {args.num_pred_steps}')
