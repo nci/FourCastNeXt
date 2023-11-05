@@ -113,12 +113,12 @@ if __name__ == '__main__':
   calc_rmse = not args.skip_rmse
   assert has_outputs or calc_rmse
 
-  model = FourCastNetModule.load_from_checkpoint(args.checkpoint_path).eval()
+  device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+  model = FourCastNetModule.load_from_checkpoint(args.checkpoint_path, map_location=device).eval()
 
   precision = 32 ## we use f32 for inference
   model.hparams.precision = precision
 
-  device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
   model.to(device)
 
   prediction_times = get_prediction_times(start_time, end_time, args.num_pred_steps)
