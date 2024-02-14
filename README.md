@@ -4,9 +4,21 @@ FourCastNeXt
 Overview
 --------
 
-This repo contains scripts to perform FourCastNeXt training and inference using ERA5 from NCI project rt52.
+This repo contains scripts to perform FourCastNeXt training and inference using ERA5 from [NCI](https://nci.org.au/) project `rt52`.
 
-For technical details in the model and training methods, please refer to [technical report](technical_report.pdf).
+For technical details in the model and training methods, please refer to the [preprint](https://arxiv.org/abs/2401.05584).
+
+Citation
+-------
+
+```bibtex
+@article{guo2024fourcastnext,
+  title={FourCastNeXt: Improving FourCastNet Training with Limited Compute},
+  author={Edison Guo and Maruf Ahmed and Yue Sun and Rahul Mahendru and Rui Yang and Harrison Cook and Tennessee Leeuwenburg and Ben Evans},
+  journal={arXiv preprint arXiv:2401.05584},
+  year={2024}
+}
+```
 
 Setup
 -----
