@@ -13,8 +13,8 @@ Citation
 
 ```bibtex
 @article{guo2024fourcastnext,
-  title={FourCastNeXt: Improving FourCastNet Training with Limited Compute},
-  author={Edison Guo and Maruf Ahmed and Yue Sun and Rahul Mahendru and Rui Yang and Harrison Cook and Tennessee Leeuwenburg and Ben Evans},
+  title={FourCastNeXt: Optimizing FourCastNet Training for Limited Compute},
+  author={Guo, Edison and Ahmed, Maruf and Sun, Yue and Yang, Rui and Cook, Harrison and Leeuwenburg, Tennessee and Evans, Ben},
   journal={arXiv preprint arXiv:2401.05584},
   year={2024}
 }
